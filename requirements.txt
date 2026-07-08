@@ -1,1 +1,10 @@
-
+torch
+transformers
+peft
+datasets
+sentence-transformers
+scikit-learn
+pandas
+numpy
+wandb
+streamlit
