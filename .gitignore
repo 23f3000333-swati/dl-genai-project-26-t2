@@ -1,0 +1,22 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Weights & Biases local logs
+wandb/
+
+# Python Cache & Compiled Files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data & Large Output Files
+data/*.csv
+models/
+results/
+submission.csv
+
+# IDE settings
+.vscode/
+.idea/
