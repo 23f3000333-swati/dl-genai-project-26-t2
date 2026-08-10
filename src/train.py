@@ -16,7 +16,6 @@ from transformers import (
 )
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from dataclasses import dataclass
-import wandb
 
 # Import modular components from local package
 from src.preprocessing import prepare_data, OPTION_COLS, INDEX_TO_OPTION
@@ -24,21 +23,35 @@ from src.models import RegularizedMCQClassifier, get_deberta_lora_model
 from src.ensemble import compute_map_at_3, compute_cls_metrics, find_best_ensemble_weights
 
 # =====================================================================
-# 1. CONFIGURATION & SEEDS
+# 1. LOCAL CONFIGURATION & SPEED TOGGLE
 # =====================================================================
+os.environ["WANDB_DISABLED"] = "true"
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["WANDB_PROJECT"] = "smart-mcq-solver-challenge"
+
+# Set FAST_CPU_MODE = True for fast 1-minute local verification on laptop
+FAST_CPU_MODE = True  
 
 SEED = 42
 torch.manual_seed(SEED)
 np.random.seed(SEED)
 
+TRAIN_PATH = "./data/train.csv"
+TEST_PATH  = "./data/test.csv"
+
 MODEL_NAME  = "microsoft/deberta-v3-base"
 SBERT_NAME  = "sentence-transformers/all-MiniLM-L6-v2"
-MAX_LENGTH  = 224
-BATCH_SIZE  = 4
-GRAD_ACCUM  = 4
-EPOCHS_XFMR = 5
+
+# Adjust hyperparameters based on mode
+if FAST_CPU_MODE:
+    MAX_LENGTH  = 128   # Reduced sequence length for fast CPU speed
+    BATCH_SIZE  = 8
+    GRAD_ACCUM  = 2
+    EPOCHS_XFMR = 1     # Single epoch for quick local check
+else:
+    MAX_LENGTH  = 224
+    BATCH_SIZE  = 4
+    GRAD_ACCUM  = 4
+    EPOCHS_XFMR = 5
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -46,23 +59,28 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 def run_pipeline():
     print("--- Step 1: Loading & Preprocessing Data ---")
     df_train, df_val, test_df = prepare_data(
-        train_path="./data/train.csv", 
-        test_path="./data/test.csv", 
+        train_path=TRAIN_PATH, 
+        test_path=TEST_PATH, 
         seed=SEED
     )
     
+    # If in fast local CPU mode, sample a smaller subset for instant testing
+    if FAST_CPU_MODE and len(df_train) > 50:
+        print("--> FAST_CPU_MODE active: Using 50 samples for rapid local execution.")
+        df_train = df_train.head(50).reset_index(drop=True)
+        df_val   = df_val.head(20).reset_index(drop=True)
+
     val_true = df_val['label'].values
 
     # =====================================================================
     # 2. MODEL 1: REGULARIZED PYTORCH MLP (SCRATCH)
     # =====================================================================
     print("\n--- Step 2: Training Model 1 (Regularized PyTorch MLP) ---")
-    wandb.init(project="smart-mcq-solver-challenge", name="Model_1_Scratch_DeepMLP", job_type="train", reinit=True)
 
     def merge_text(df):
         return df['prompt'] + " [SEP] " + df['A'] + " " + df['B'] + " " + df['C'] + " " + df['D'] + " " + df['E']
 
-    vectorizer = TfidfVectorizer(max_features=2000, stop_words='english', ngram_range=(1, 2), sublinear_tf=True)
+    vectorizer = TfidfVectorizer(max_features=1000, stop_words='english', ngram_range=(1, 2), sublinear_tf=True)
     X_train_vec = torch.tensor(vectorizer.fit_transform(merge_text(df_train)).toarray(), dtype=torch.float32)
     X_val_vec   = torch.tensor(vectorizer.transform(merge_text(df_val)).toarray(), dtype=torch.float32)
     X_test_vec  = torch.tensor(vectorizer.transform(merge_text(test_df)).toarray(), dtype=torch.float32)
@@ -70,14 +88,15 @@ def run_pipeline():
     y_train_scratch = torch.tensor(df_train['label'].values, dtype=torch.long)
     y_val_scratch   = torch.tensor(df_val['label'].values, dtype=torch.long)
 
-    scratch_loader = DataLoader(TensorDataset(X_train_vec, y_train_scratch), batch_size=32, shuffle=True)
+    scratch_loader = DataLoader(TensorDataset(X_train_vec, y_train_scratch), batch_size=16, shuffle=True)
 
     scratch_model = RegularizedMCQClassifier(X_train_vec.shape[1]).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(scratch_model.parameters(), lr=5e-4, weight_decay=0.1)
 
+    epochs_mlp = 3 if FAST_CPU_MODE else 12
     best_val_map, best_state = -1.0, None
-    for epoch in range(12):
+    for epoch in range(epochs_mlp):
         scratch_model.train()
         for batch_X, batch_y in scratch_loader:
             optimizer.zero_grad()
@@ -104,20 +123,18 @@ def run_pipeline():
     m1_acc, m1_f1 = compute_cls_metrics(scratch_val_logits, y_val_scratch.numpy())
     m1_map = compute_map_at_3(scratch_val_logits, y_val_scratch.numpy())
     print(f"Model 1 Val -> Acc: {m1_acc:.4f} | Macro-F1: {m1_f1:.4f} | MAP@3: {m1_map:.4f}")
-    
-    wandb.log({"final_accuracy": m1_acc, "final_macro_f1": m1_f1, "final_map3": m1_map})
-    wandb.finish()
 
     del scratch_model
-    gc.collect(); torch.cuda.empty_cache()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     # =====================================================================
     # 3. MODEL 2: PRETRAINED DEBERTA + LORA FINE-TUNING
     # =====================================================================
     print("\n--- Step 3: Training Model 2 (DeBERTa-v3 + LoRA) ---")
-    wandb.init(project="smart-mcq-solver-challenge", name="Model_2_DeBERTa_LoRA", job_type="train", reinit=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=False)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
     def preprocess_function(examples):
         n = len(examples['prompt'])
@@ -133,7 +150,7 @@ def run_pipeline():
 
     def make_ds(df):
         drop_cols = [c for c in df.columns if c not in ['input_ids', 'attention_mask', 'token_type_ids', 'label']]
-        return Dataset.from_pandas(df).map(preprocess_function, batched=True, batch_size=100, remove_columns=drop_cols)
+        return Dataset.from_pandas(df).map(preprocess_function, batched=True, batch_size=50, remove_columns=drop_cols)
 
     tok_train = make_ds(df_train)
     tok_val   = make_ds(df_val)
@@ -154,7 +171,6 @@ def run_pipeline():
             return batch
 
     pt_model = get_deberta_lora_model(MODEL_NAME)
-    pt_model.print_trainable_parameters()
 
     args = TrainingArguments(
         output_dir='./results',
@@ -163,12 +179,12 @@ def run_pipeline():
         save_strategy='no',
         learning_rate=2e-4,
         per_device_train_batch_size=BATCH_SIZE,
-        per_device_eval_batch_size=8,
+        per_device_eval_batch_size=BATCH_SIZE,
         gradient_accumulation_steps=GRAD_ACCUM,
         num_train_epochs=EPOCHS_XFMR,
         fp16=torch.cuda.is_available(),
-        report_to="wandb",
-        logging_steps=25,
+        report_to="none",
+        logging_steps=10,
         seed=SEED
     )
 
@@ -192,21 +208,21 @@ def run_pipeline():
     m2_acc, m2_f1 = compute_cls_metrics(val_logits, val_true)
     m2_map = compute_map_at_3(val_logits, val_true)
     print(f"Model 2 Val -> Acc: {m2_acc:.4f} | Macro-F1: {m2_f1:.4f} | MAP@3: {m2_map:.4f}")
-    
-    wandb.finish()
 
     del trainer, pt_model
-    gc.collect(); torch.cuda.empty_cache()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     # =====================================================================
     # 4. MODEL 3: SBERT SIMILARITY + LOGISTIC REGRESSION
     # =====================================================================
     print("\n--- Step 4: Training Model 3 (SBERT Similarity + LogReg) ---")
-    wandb.init(project="smart-mcq-solver-challenge", name="Model_3_Choice_SimilarityLR", job_type="train", reinit=True)
 
     try:
         from sentence_transformers import SentenceTransformer
     except ImportError:
+        import subprocess
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", "sentence-transformers"], check=True)
         from sentence_transformers import SentenceTransformer
 
@@ -218,10 +234,10 @@ def run_pipeline():
         return dot / denom
 
     def build_similarity_features(df, sbert_model):
-        prompt_emb = sbert_model.encode(df['prompt'].tolist(), batch_size=64, show_progress_bar=False)
+        prompt_emb = sbert_model.encode(df['prompt'].tolist(), batch_size=32, show_progress_bar=False)
         sbert_feats = []
         for opt in OPTION_COLS:
-            opt_emb = sbert_model.encode(df[opt].tolist(), batch_size=64, show_progress_bar=False)
+            opt_emb = sbert_model.encode(df[opt].tolist(), batch_size=32, show_progress_bar=False)
             sbert_feats.append(row_cosine_sim(prompt_emb, opt_emb))
         return np.column_stack(sbert_feats)
 
@@ -229,7 +245,7 @@ def run_pipeline():
     X_val_sim   = build_similarity_features(df_val, sbert)
     X_test_sim  = build_similarity_features(test_df, sbert)
 
-    logreg = LogisticRegression(max_iter=1000, C=1.0, random_state=SEED)
+    logreg = LogisticRegression(max_iter=500, C=1.0, random_state=SEED)
     logreg.fit(X_train_sim, df_train['label'].values)
 
     logreg_val_preds  = logreg.predict_proba(X_val_sim)
@@ -238,12 +254,11 @@ def run_pipeline():
     m3_acc, m3_f1 = compute_cls_metrics(logreg_val_preds, val_true)
     m3_map = compute_map_at_3(logreg_val_preds, val_true)
     print(f"Model 3 Val -> Acc: {m3_acc:.4f} | Macro-F1: {m3_f1:.4f} | MAP@3: {m3_map:.4f}")
-    
-    wandb.log({"final_accuracy": m3_acc, "final_macro_f1": m3_f1, "final_map3": m3_map})
-    wandb.finish()
 
     del sbert
-    gc.collect(); torch.cuda.empty_cache()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     # =====================================================================
     # 5. MODEL 4: WEIGHTED ENSEMBLE
@@ -256,10 +271,6 @@ def run_pipeline():
     w1, w2, w3 = best_weights
     print(f"Best Weights -> Scratch MLP: {w1:.2f}, DeBERTa+LoRA: {w2:.2f}, SBERT+LogReg: {w3:.2f}")
     print(f"Best Validation MAP@3: {best_map:.4f}")
-
-    wandb.init(project="smart-mcq-solver-challenge", name="Model_4_Weighted_Ensemble", job_type="ensemble", reinit=True)
-    wandb.log({"ensemble_map3": best_map, "w_scratch": w1, "w_deberta": w2, "w_logreg": w3})
-    wandb.finish()
 
     # Compute Test Set Predictions
     ensemble_test_probs = (w1 * scratch_test_preds) + (w2 * deberta_test_preds) + (w3 * logreg_test_preds)

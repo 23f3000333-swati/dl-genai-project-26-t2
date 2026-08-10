@@ -8,3 +8,5 @@ pandas
 numpy
 wandb
 streamlit
+sentencepiece
+protobuf
