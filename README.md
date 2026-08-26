@@ -62,15 +62,4 @@ dl-genai-project-26-t2/
 └── README.md              # Project documentation
 ```
 
-## Local Installation & Execution
-
-### 1. Clone Repository & Setup Virtual Environment
-
-```bash
-git clone [https://github.com/23f3000333-swati/dl-genai-project-26-t2.git](https://github.com/23f3000333-swati/dl-genai-project-26-t2.git)
-cd dl-genai-project-26-t2
-
-# Create and activate virtual environment
-python3 -m venv venv
-source venv/bin/activate
-```
+---
