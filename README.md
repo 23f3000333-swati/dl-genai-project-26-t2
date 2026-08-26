@@ -1,5 +1,5 @@
 # dl-genai-project-26-t2
-# Smart MCQ Solver Challenge 🧠
+# Smart MCQ Solver Challenge 
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://dl-genai-project-26-t2-jbmmn9qxefzcaldu3sydbk.streamlit.app/)
 
@@ -9,7 +9,7 @@
 
 ---
 
-## 📌 Project Overview
+##  Project Overview
 
 The **Smart MCQ Solver** is a natural language processing (NLP) and deep learning pipeline designed to predict the correct answer for 5-option multiple-choice questions ($A, B, C, D, E$). 
 
@@ -17,14 +17,14 @@ By combining classical text feature extraction with modern transformer fine-tuni
 
 ---
 
-## 🚀 Live Demo
+## Live Demo
 
 Access the interactive web interface deployed on Streamlit Cloud:
-👉 **[Launch Smart MCQ Solver AI](https://dl-genai-project-26-t2-jbmmn9qxefzcaldu3sydbk.streamlit.app/)**
+**[Launch Smart MCQ Solver AI](https://dl-genai-project-26-t2-jbmmn9qxefzcaldu3sydbk.streamlit.app/)**
 
 ---
 
-## 🏗️ Model Architecture & Pipeline
+## Model Architecture & Pipeline
 
 The pipeline integrates three distinct model paradigms into an ensemble:
 
@@ -45,7 +45,7 @@ The pipeline integrates three distinct model paradigms into an ensemble:
 
 ---
 
-## 📂 Repository Layout
+## Repository Layout
 
 ```text
 dl-genai-project-26-t2/
@@ -62,7 +62,7 @@ dl-genai-project-26-t2/
 └── README.md              # Project documentation
 ```
 
-## 🛠️ Local Installation & Execution
+## Local Installation & Execution
 
 ### 1. Clone Repository & Setup Virtual Environment
 
